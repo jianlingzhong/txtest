@@ -22,8 +22,7 @@
 #define USELESS_BITS 0xffffffc0 /*only the least sig 6 bits are zero*/
 #define NUM_TRIES 10000
 
-int workingset = 20;
-#define ARRAYSIZE workingset*1024/4 //Working set/sizeof(int)
+#define ARRAYSIZE 1000000 //Working set/sizeof(int)
 
 int statLog[MAX_THREADS][UNIQ_STATUS];
 int statRetry[MAX_THREADS];
@@ -154,7 +153,7 @@ int main(int argc, char**argv)
 	sched_setaffinity(0, sizeof(mask), &mask);
 	*/
 		
-    bigArray = (int *)malloc(ARRAYSIZE);
+    bigArray = (int *)malloc(ARRAYSIZE*sizeof(int));
     assert(MAX_THREADS * tx_sz < ARRAYSIZE);
 	
 	//Cache warmup	
