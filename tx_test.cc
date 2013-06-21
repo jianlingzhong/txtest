@@ -46,7 +46,7 @@ const char *byte_to_binary(int x)
     return b;
 }
 
-
+/*
 class RTMScope {
 
  public:
@@ -79,6 +79,34 @@ class RTMScope {
   RTMScope(const RTMScope&);
   void operator=(const RTMScope&);
 };
+*/
+int
+my_xbegin(int id)
+{
+    while(true) {
+      unsigned stat;
+      stat = _xbegin ();
+      if(stat == _XBEGIN_STARTED) {
+        return 1;
+      } else {
+        //call some fallback function
+        statRetry[id]++;
+        assert((stat & USELESS_BITS)  == 0);
+        statLog[id][stat& ~USELESS_BITS]++;
+            
+        if ((stat &  _XABORT_RETRY) == 0) {
+            //will not succeed on a retry
+            return 0;
+        }
+      }
+    }
+}
+
+int my_xend(int id)
+{
+    _xend();
+    return 1;
+}
 
 void *
 thread_run(void *x)
@@ -89,10 +117,12 @@ thread_run(void *x)
     assert(srand48_r(id, &r_state) == 0);
     */
     for (int k = 0; k < NUM_TRIES; k++) {
-        RTMScope tx(id);
+        //RTMScope tx(id);
+        assert(my_xbegin(id));
         for (int i = 0; i < tx_sz; i++) {
             bigArray[id*MAX_THREADS+i]++; 
         }
+        assert(my_xend(id));
     }
     printf("thread-%d finished %d rtm regions\n", id, NUM_TRIES);
 }
