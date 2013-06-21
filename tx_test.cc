@@ -148,7 +148,7 @@ int main(int argc, char**argv)
         for (int j = 0; j < n_th; j++) {
             stats[i]+=statLog[i][j];
         }
-        printf("stat %s count %d\n", i, stats[i]);
+        printf("stat %s count %d\n", byte_to_binary(i), stats[i]);
     }
 
     return 0;
