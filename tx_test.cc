@@ -133,7 +133,7 @@ thread_run(void *x)
 
         //====== BEGIN_TX ===========
         for (int i = 0; i < tx_sz; i++) {
-            bigArray[id*MAX_THREADS*tx_sz+i].n++; 
+            bigArray[id*tx_sz+i].n++; 
         }
         //====== END_TX ===========
         if (in_tx)
