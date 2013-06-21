@@ -1,8 +1,11 @@
 #include <immintrin.h>
 #include <stdio.h>
 #include <sched.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
+#include <pthread.h>
 
 
 
@@ -14,48 +17,55 @@
 #define XABORT_DEBUG_INDEX 5
 #define XABORT_NESTED_INDEX 6
 
+#define MAX_THREADS 8
+#define UNIQ_STATUS (1 << 6)
+#define USELESS_BITS 0xffffffc0 /*only the least sig 6 bits are zero*/
+#define NUM_TRIES 10000
+
 int workingset = 20;
 #define ARRAYSIZE workingset*1024/4 //Working set/sizeof(int)
 
+int statLog[MAX_THREADS][UNIQ_STATUS];
+int statRetry[MAX_THREADS];
+int tx_sz = 10;
 
 
 int* bigArray;
 
+const char *byte_to_binary(int x)
+{
+    static char b[9];
+    b[0] = '\0';
+
+    int z;
+    for (z = 128; z > 0; z >>= 1)
+    {
+        strcat(b, ((x & z) == z) ? "1" : "0");
+    }
+
+    return b;
+}
+
 
 class RTMScope {
 
-  int localStatus[7];
-  int localRetry;
  public:
-  RTMScope() {
-  	
-    for(int i = 0; i < 7; i++)
-      localStatus[i]= 0;
-
+  RTMScope(int id) {
     while(true) {
       unsigned stat;
       stat = _xbegin ();
-      if(stat == _XBEGIN_STARTED)
+      if(stat == _XBEGIN_STARTED) {
         return;
-      else {
-   		
-   	//call some fallback function
-        localRetry++;
-   		
-   	if((stat & _XABORT_EXPLICIT) != 0)
-            localStatus[XABORT_EXPLICIT_INDEX]++;
-   	else if((stat &  _XABORT_RETRY) != 0)
-            localStatus[XABORT_RETRY_INDEX]++;
-   	else if((stat & _XABORT_CONFLICT) != 0)
-            localStatus[XABORT_CONFLICT_INDEX]++;
-   	else if((stat & _XABORT_CAPACITY) != 0)
-            localStatus[XABORT_CAPACITY_INDEX]++;
-   	else if((stat & _XABORT_DEBUG) != 0)
-            localStatus[XABORT_DEBUG_INDEX]++;
-   	else if((stat &  _XABORT_NESTED) != 0)
-   	    localStatus[XABORT_NESTED_INDEX]++;
-   		
-        continue;
+      } else {
+        //call some fallback function
+        statRetry[id]++;
+        assert((stat & USELESS_BITS)  == 0);
+        statLog[id][stat& ~USELESS_BITS]++;
+            
+        if ((stat &  _XABORT_RETRY) == 0) {
+            //will not succeed on a retry
+            return;
+        }
       }
     }
   }
@@ -63,21 +73,6 @@ class RTMScope {
   ~RTMScope() 
   {  
     _xend ();
-	
-    printf("retry %d\n", localRetry);
-	
-    if(localStatus[XABORT_EXPLICIT_INDEX] != 0)
-	  printf("XABORT_EXPLICIT %d\n", localStatus[XABORT_EXPLICIT_INDEX]);
-    if(localStatus[XABORT_RETRY_INDEX] != 0)
-	  printf("XABORT_RETRY %d\n", localStatus[XABORT_RETRY_INDEX]);
-    if(localStatus[XABORT_CONFLICT_INDEX] != 0)
-	  printf("XABORT_CONFLICT %d\n", localStatus[XABORT_CONFLICT_INDEX]);
-    if(localStatus[XABORT_CAPACITY_INDEX] != 0)
-	  printf("XABORT_CAPACITY %d\n", localStatus[XABORT_CAPACITY_INDEX]);
-    if(localStatus[XABORT_DEBUG_INDEX] != 0)
-	  printf("XABORT_DEBUG %d\n", localStatus[XABORT_DEBUG_INDEX]);
-    if(localStatus[XABORT_NESTED_INDEX] != 0)
-	  printf("XABORT_NESTED %d\n", localStatus[XABORT_NESTED_INDEX]);
  }
 
  private:
@@ -85,24 +80,40 @@ class RTMScope {
   void operator=(const RTMScope&);
 };
 
+void *
+thread_run(void *x)
+{
+    int id = *(int *)x;
+    /*
+    struct drand48_data r_state;
+    assert(srand48_r(id, &r_state) == 0);
+    */
+    for (int k = 0; k < NUM_TRIES; k++) {
+        RTMScope tx(id);
+        for (int i = 0; i < tx_sz; i++) {
+            bigArray[id*MAX_THREADS+i]++; 
+        }
+    }
+}
 
 
 int main(int argc, char**argv)
 {
+    int n_th = 1;
+    char ch = 0;
+    while ((ch = getopt(argc, argv, "t:"))!= -1) {
+        switch (ch) {
+        case 't':
+            n_th = atoi(optarg);
+            break;
+        case 's': 
+            tx_sz= atoi(optarg);
+            break;
+        default:    
+            break;
+        }
+    }        
 
-    for (int i = 1; i < argc; i++) {
-		
-	  int n = 0;
-	  char junk;
-	  if (strcmp(argv[i], "--help") == 0){
-	    printf("./a.out --ws=size of workingset (KB default:20KB)\n");
-	    return 1;
-	  }
-	  else if(sscanf(argv[i], "--ws=%d%c", &n, &junk) == 1) {
-	    workingset = n;
-	  }
-    }
-	
 
 	//bound to the third core
 	/*
@@ -113,21 +124,32 @@ int main(int argc, char**argv)
 	*/
 		
     bigArray = (int *)malloc(ARRAYSIZE);
+    assert(MAX_THREADS * tx_sz < ARRAYSIZE);
 	
 	//Cache warmup	
     for(bigArray[0] = 1; bigArray[0] < ARRAYSIZE; bigArray[0]++)
 	  bigArray[bigArray[0]] += bigArray[0];
-	 
-	//access in rtm protected region
-    {	
-      RTMScope beg;
-	  for(bigArray[0] = 1; bigArray[0] < ARRAYSIZE; bigArray[0]++)
-        bigArray[bigArray[0]] += bigArray[0];
 	
+    pthread_t th[MAX_THREADS];
+    int ids[MAX_THREADS];
+    for (int i = 0; i < n_th; i++) { 
+        ids[i]=i;
+        assert(pthread_create(&th[i], NULL, thread_run, (void *)&ids[i])==0);
     }
-	
-    printf("Hello World\n");
-	
-	return 0;
-}
 
+    for (int i = 0; i < n_th; i++) {
+        pthread_join(th[i], NULL);
+    }
+
+    int stats[UNIQ_STATUS];
+    bzero(stats, UNIQ_STATUS*sizeof(int));
+    for (int i = 0; i < UNIQ_STATUS; i++) {
+        stats[i]=0;
+        for (int j = 0; j < n_th; j++) {
+            stats[i]+=statLog[i][j];
+        }
+        printf("stat %s count %d\n", i, stats[i]);
+    }
+
+    return 0;
+}

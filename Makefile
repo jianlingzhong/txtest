@@ -3,7 +3,7 @@ CPP=g++-4.8.0
 all: tx_test
 
 tx_test : tx_test.o   
-	$(CPP) -o $@ $< -lstdc++
+	$(CPP) -o $@ $< -lstdc++ -lpthread
 
 %.o : %.cc
 	$(CPP) -c -mrtm $<
