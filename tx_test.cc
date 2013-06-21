@@ -26,6 +26,7 @@
 
 int statLog[MAX_THREADS][UNIQ_STATUS];
 int statRetry[MAX_THREADS];
+int statFailed[MAX_THREADS];
 int tx_sz = 10;
 
 
@@ -117,11 +118,14 @@ thread_run(void *x)
     */
     for (int k = 0; k < NUM_TRIES; k++) {
         //RTMScope tx(id);
-	assert(my_xbegin(id)!=0);
+        int in_tx = my_xbegin(id);
+        if (!in_tx)
+            statFailed[id]++;
         for (int i = 0; i < tx_sz; i++) {
             bigArray[id*MAX_THREADS+i]++; 
         }
-        assert(my_xend(id));
+        if (in_tx)
+            assert(my_xend(id));
     }
     printf("thread-%d finished %d rtm regions\n", id, NUM_TRIES);
 }
@@ -179,10 +183,17 @@ int main(int argc, char**argv)
         for (int j = 0; j < n_th; j++) {
             stats[i]+=statLog[j][i];
         }
-	if (stats[i]!=0) {
-        	printf("stat %s count %d\n", byte_to_binary(i), stats[i]);
-	}
+        if (stats[i]!=0) {
+            printf("stat %s count %d\n", byte_to_binary(i), stats[i]);
+        }
     }
+    int retries = 0;
+    int failed = 0;
+    for (int i = 0; i < n_th; i++) {
+        retries += statRetry[i];
+        failed += statFailed[i];
+    }
+    printf("avg number of retries %.2f  avg number of failures %.2f\n", (double)retries/(n_th*NUM_TRIES), (double)failed/(n_th*NUM_TRIES));
 
     return 0;
 }
