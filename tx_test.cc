@@ -24,13 +24,18 @@
 
 #define ARRAYSIZE 1000000 //Working set/sizeof(int)
 
+typedef struct {
+    int n;
+} __attribute__((aligned(64))) elm_t;
+
+bool no_tx = false;
 int statLog[MAX_THREADS][UNIQ_STATUS];
 int statRetry[MAX_THREADS];
 int statFailed[MAX_THREADS];
 int tx_sz = 10;
 
 
-int* bigArray;
+elm_t* bigArray;
 
 const char *byte_to_binary(int x)
 {
@@ -82,7 +87,9 @@ class RTMScope {
 */
 int
 my_xbegin(int id)
-{
+{   
+    if (no_tx) return 1;
+
     while(true) {
       unsigned stat;
       stat = _xbegin ();
@@ -104,6 +111,8 @@ my_xbegin(int id)
 
 int my_xend(int id)
 {
+    if (no_tx) return 1;
+
     _xend();
     return 1;
 }
@@ -121,9 +130,12 @@ thread_run(void *x)
         int in_tx = my_xbegin(id);
         if (!in_tx)
             statFailed[id]++;
+
+        //====== BEGIN_TX ===========
         for (int i = 0; i < tx_sz; i++) {
-            bigArray[id*MAX_THREADS+i]++; 
+            bigArray[id*MAX_THREADS+i].n++; 
         }
+        //====== END_TX ===========
         if (in_tx)
             assert(my_xend(id));
     }
@@ -135,8 +147,11 @@ int main(int argc, char**argv)
 {
     int n_th = 1;
     char ch = 0;
-    while ((ch = getopt(argc, argv, "t:"))!= -1) {
+    while ((ch = getopt(argc, argv, "t:s:n"))!= -1) {
         switch (ch) {
+        case 'n':
+            no_tx = true;
+            break;
         case 't':
             n_th = atoi(optarg);
             break;
@@ -156,13 +171,13 @@ int main(int argc, char**argv)
 	CPU_SET(2, &mask);
 	sched_setaffinity(0, sizeof(mask), &mask);
 	*/
-		
-    bigArray = (int *)malloc(ARRAYSIZE*sizeof(int));
+	printf("each array element size %d\n", sizeof(elm_t));	
+    bigArray = (elm_t *)malloc(ARRAYSIZE*sizeof(elm_t));
     assert(MAX_THREADS * tx_sz < ARRAYSIZE);
 	
 	//Cache warmup	
-    for(bigArray[0] = 1; bigArray[0] < ARRAYSIZE; bigArray[0]++)
-	  bigArray[bigArray[0]] += bigArray[0];
+    for(bigArray[0].n = 1; bigArray[0].n < ARRAYSIZE; bigArray[0].n++)
+	  bigArray[bigArray[0].n].n += bigArray[0].n;
 	
     pthread_t th[MAX_THREADS];
     int ids[MAX_THREADS];
@@ -193,7 +208,7 @@ int main(int argc, char**argv)
         retries += statRetry[i];
         failed += statFailed[i];
     }
-    printf("avg number of retries %.2f  avg number of failures %.2f\n", (double)retries/(n_th*NUM_TRIES), (double)failed/(n_th*NUM_TRIES));
-
+    printf("total retries: %d avg retries: %.2f total failures: %d avg failures: %.2f\n", \
+            retries, (double)retries/(n_th*NUM_TRIES), failed, (double)failed/(n_th*NUM_TRIES));
     return 0;
 }
