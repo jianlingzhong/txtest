@@ -94,6 +94,7 @@ thread_run(void *x)
             bigArray[id*MAX_THREADS+i]++; 
         }
     }
+    printf("thread-%d finished %d rtm regions\n", id, NUM_TRIES);
 }
 
 
@@ -140,6 +141,7 @@ int main(int argc, char**argv)
     for (int i = 0; i < n_th; i++) {
         pthread_join(th[i], NULL);
     }
+    printf("all %d threads finished\n", n_th);
 
     int stats[UNIQ_STATUS];
     bzero(stats, UNIQ_STATUS*sizeof(int));
