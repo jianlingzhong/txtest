@@ -117,7 +117,7 @@ thread_run(void *x)
     */
     for (int k = 0; k < NUM_TRIES; k++) {
         //RTMScope tx(id);
-        assert(my_xbegin(id));
+	assert(my_xbegin(id)!=0);
         for (int i = 0; i < tx_sz; i++) {
             bigArray[id*MAX_THREADS+i]++; 
         }
@@ -179,7 +179,9 @@ int main(int argc, char**argv)
         for (int j = 0; j < n_th; j++) {
             stats[i]+=statLog[j][i];
         }
-        printf("stat %s count %d\n", byte_to_binary(i), stats[i]);
+	if (stats[i]!=0) {
+        	printf("stat %s count %d\n", byte_to_binary(i), stats[i]);
+	}
     }
 
     return 0;
