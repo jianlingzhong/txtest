@@ -32,7 +32,8 @@ bool no_tx = false;
 int statLog[MAX_THREADS][UNIQ_STATUS];
 int statRetry[MAX_THREADS];
 int statFailed[MAX_THREADS];
-int tx_sz = 10;
+int tx_rsz = 10;
+int tx_wsz = 10;
 
 
 elm_t* bigArray;
@@ -90,7 +91,7 @@ my_xbegin(int id)
 {   
     if (no_tx) return 1;
 
-    while(true) {
+    while(true) { // infinite retry for now 
       unsigned stat;
       stat = _xbegin ();
       if(stat == _XBEGIN_STARTED) {
@@ -127,14 +128,20 @@ thread_run(void *x)
     */
     for (int k = 0; k < NUM_TRIES; k++) {
         //RTMScope tx(id);
+        int tx_sz = tx_rsz + tx_wsz;
         int in_tx = my_xbegin(id);
         if (!in_tx)
             statFailed[id]++;
 
         //====== BEGIN_TX ===========
-        for (int i = 0; i < tx_sz; i++) {
-            bigArray[id*tx_sz+i].n++; 
+        int x = 0;
+        for (int i = 0; i < tx_rsz; i++) {
+            x += bigArray[id*tx_sz+i].n; 
         }
+        for (int i = 0; i < tx_wsz; i++) {
+            bigArray[id*tx_sz+tx_rsz+i].n = x; 
+        }
+        
         //====== END_TX ===========
         if (in_tx)
             assert(my_xend(id));
@@ -147,7 +154,7 @@ int main(int argc, char**argv)
 {
     int n_th = 1;
     char ch = 0;
-    while ((ch = getopt(argc, argv, "t:s:n"))!= -1) {
+    while ((ch = getopt(argc, argv, "t:r:w:n"))!= -1) {
         switch (ch) {
         case 'n':
             no_tx = true;
@@ -155,10 +162,14 @@ int main(int argc, char**argv)
         case 't':
             n_th = atoi(optarg);
             break;
-        case 's': 
-            tx_sz= atoi(optarg);
+        case 'r': 
+            tx_rsz= atoi(optarg);
+            break;
+        case 'w': 
+            tx_wsz= atoi(optarg);
             break;
         default:    
+            assert(0);
             break;
         }
     }        
@@ -171,12 +182,12 @@ int main(int argc, char**argv)
 	CPU_SET(2, &mask);
 	sched_setaffinity(0, sizeof(mask), &mask);
 	*/
-	printf("each array element size %d\n", sizeof(elm_t));	
+	printf("each array element size %d tx_rsz %d tx_wsz %d\n", sizeof(elm_t), tx_rsz, tx_wsz);	
     bigArray = (elm_t *)malloc(ARRAYSIZE*sizeof(elm_t));
-    assert(MAX_THREADS * tx_sz < ARRAYSIZE);
+    assert(MAX_THREADS * (tx_rsz+tx_wsz) < ARRAYSIZE);
 	
 	//Cache warmup	
-    for(bigArray[0].n = 1; bigArray[0].n < ARRAYSIZE; bigArray[0].n++)
+    for(bigArray[0].n = 1; bigArray[0].n < (tx_rsz+tx_wsz)*n_th; bigArray[0].n++)
 	  bigArray[bigArray[0].n].n += bigArray[0].n;
 	
     pthread_t th[MAX_THREADS];
