@@ -12,8 +12,8 @@
 #define USELESS_BITS 0xffffffc0 /*only the least sig 6 bits are zero*/
 #define NUM_TRIES 100000000
 
-#define MAX_RSET 1024
-#define MAX_WSET 1024
+#define MAX_RSET 10240
+#define MAX_WSET 10240
 
 #define ARRAYSIZE 1000000 //Working set/sizeof(int)
 
@@ -37,6 +37,7 @@ int tx_wsz = 10;
 bool debug = false;
 int n_th = 1;
 pthread_mutex_t big_mu;
+int fallback_lock = 0;
 int *per_core_committed;
 
 typedef struct {
@@ -102,8 +103,6 @@ diff_timespec(const struct timespec &end, const struct timespec &start)
 bool
 rtm_begin(int id)
 {   
-    if (tx_type == NO_TX) return 1;
-
     while(true) { 
         unsigned stat;
         stat = _xbegin ();
@@ -118,9 +117,12 @@ rtm_begin(int id)
             if ((stat & _XABORT_EXPLICIT)) {
                 statUAborted[id]++;
             }
+            //will not succeed on a retry
             if ((stat &  _XABORT_RETRY) == 0) {
-                //will not succeed on a retry
+                //grab a fallback lock
                 statFailed[id]++;
+                while (!__sync_bool_compare_and_swap(&fallback_lock,0,1)) {
+                }
                 return false;
             }
         }
@@ -130,8 +132,6 @@ rtm_begin(int id)
 int 
 rtm_end(int id)
 {
-    if (tx_type == NO_TX) return 1;
-
     _xend();
     return 1;
 }
@@ -189,9 +189,9 @@ rtm_commit_tx(int thread_id, tx_context_t *context)
     int c =  __sync_fetch_and_add(&counter, 1);
 
     bool in_rtm = rtm_begin(thread_id);
-    if (!in_rtm) {
-        return false;
-    }
+
+    //critical section
+    volatile int x = fallback_lock; //grabbing this lock aborts this rtm 
 
     //critical section
     for (int i = 0; i < context->rset_sz; i++) {
@@ -211,7 +211,12 @@ rtm_commit_tx(int thread_id, tx_context_t *context)
         kv_store[context->wset[i].key].gced_version = kv_store[context->wset[i].key].version;
         kv_store[context->wset[i].key].version = c;
     }
-    rtm_end(thread_id);
+    if (in_rtm) {
+        rtm_end(thread_id);
+    }else{ 
+        while (!__sync_bool_compare_and_swap(&fallback_lock, 1, 0)) {
+        }
+    }
     per_core_committed[thread_id] = c;
 }
 #endif /*RTM_ENABLED*/
@@ -252,13 +257,14 @@ biglock_commit_tx(int thread_id, tx_context_t *context)
 DONE:
     assert(pthread_mutex_unlock(&big_mu) == 0);
     if (status) {
-        per_core_committed[thread_id] = c;
+        //per_core_committed[thread_id] = c;
         //this is only correct because of RTM's strong atomicity guarantee
         while (1) {
             volatile int fetch_counter =  committed_counter;
-            if (context->biggest_version_read > fetch_counter) {
-                __sync_bool_compare_and_swap(&committed_counter, fetch_counter, context->biggest_version_read);
-            }else{
+            if (c > fetch_counter) {
+                if(__sync_bool_compare_and_swap(&committed_counter, fetch_counter, c)) 
+                        break;
+            } else {
                 break;
             }
         }
@@ -266,10 +272,10 @@ DONE:
     return status;
 }
 
+/* this thread periodically advances the global commit point
 void *
 checkcommit_thread_run(void *x)
 {
-    /* this thread periodically advances the global commit point*/
     while (1) {
         int x = per_core_committed[0];
         for (int i = 1; i < n_th; i++) {
@@ -279,9 +285,10 @@ checkcommit_thread_run(void *x)
         }
         assert(committed_counter < x);
         committed_counter = x;
-        usleep(1000); /* sleep 1 ms */
+        usleep(1000); 
     }
 }
+*/
 
 inline void
 simple_body(int id) {
@@ -474,9 +481,10 @@ main(int argc, char**argv)
         ids[i]=i;
         assert(pthread_create(&th[i], NULL, thread_run, (void *)&ids[i])==0);
     }
-
+/*
     pthread_t checkcommit_th;
     assert(pthread_create(&checkcommit_th, NULL, checkcommit_thread_run, NULL)==0);
+    */
 
     pthread_t periodic_th;
     assert(pthread_create(&periodic_th, NULL, periodic_stat, NULL)==0);
