@@ -37,6 +37,7 @@ int tx_wsz = 10;
 bool debug = false;
 int n_th = 1;
 pthread_mutex_t big_mu;
+int *per_core_committed;
 
 typedef struct {
     long key; //actual key or the collision resistant hashvalue of key
@@ -63,11 +64,12 @@ typedef struct {
     int rset_sz;
     wr_entry_t wset[MAX_WSET];
     int wset_sz;
+    int biggest_version_read;
 } tx_context_t;
 
 node_t* kv_store;
 int counter = 0;
-int committed_counter = 0;
+int committed_counter = -1;
 
 const char *byte_to_binary(int x)
 {
@@ -163,6 +165,8 @@ read_tx(tx_context_t *context, long key)
         int i = context->rset_sz++;
         context->rset[i].version = kv_store[key].version;
         context->rset[i].n = &kv_store[key];
+        if (context->rset[i].version > context->biggest_version_read)
+            context->biggest_version_read = context->rset[i].version;
         return kv_store[key].value;
     }
 }
@@ -183,6 +187,7 @@ rtm_commit_tx(int thread_id, tx_context_t *context)
     assert(!context->read_only);
 
     int c =  __sync_fetch_and_add(&counter, 1);
+
     bool in_rtm = rtm_begin(thread_id);
     if (!in_rtm) {
         return false;
@@ -206,8 +211,8 @@ rtm_commit_tx(int thread_id, tx_context_t *context)
         kv_store[context->wset[i].key].gced_version = kv_store[context->wset[i].key].version;
         kv_store[context->wset[i].key].version = c;
     }
-   
     rtm_end(thread_id);
+    per_core_committed[thread_id] = c;
 }
 #endif /*RTM_ENABLED*/
 
@@ -220,7 +225,6 @@ biglock_commit_tx(int thread_id, tx_context_t *context)
     bool status = false;
 
     assert(pthread_mutex_lock(&big_mu)==0);
-
 
     //critical section
     for (int i = 0; i < context->rset_sz; i++) {
@@ -247,11 +251,37 @@ biglock_commit_tx(int thread_id, tx_context_t *context)
     status = true;
 DONE:
     assert(pthread_mutex_unlock(&big_mu) == 0);
+    if (status) {
+        per_core_committed[thread_id] = c;
+        //this is only correct because of RTM's strong atomicity guarantee
+        while (1) {
+            volatile int fetch_counter =  committed_counter;
+            if (context->biggest_version_read > fetch_counter) {
+                __sync_bool_compare_and_swap(&committed_counter, fetch_counter, context->biggest_version_read);
+            }else{
+                break;
+            }
+        }
+    }
     return status;
 }
 
-
-
+void *
+checkcommit_thread_run(void *x)
+{
+    /* this thread periodically advances the global commit point*/
+    while (1) {
+        int x = per_core_committed[0];
+        for (int i = 1; i < n_th; i++) {
+            if (x > per_core_committed[i]) {
+                x = per_core_committed[i];
+            }
+        }
+        assert(committed_counter < x);
+        committed_counter = x;
+        usleep(1000); /* sleep 1 ms */
+    }
+}
 
 inline void
 simple_body(int id) {
@@ -423,6 +453,9 @@ main(int argc, char**argv)
     assert(tx_rsz < MAX_RSET);
     assert(tx_wsz < MAX_WSET);
 
+    per_core_committed = (int *)malloc(sizeof(int)*n_th);
+    bzero(per_core_committed, sizeof(int)*n_th);
+
     //Cache warmup	
     for(int i = 0; i < ARRAYSIZE; i++) {
         kv_store[i].key = i; 
@@ -442,8 +475,11 @@ main(int argc, char**argv)
         assert(pthread_create(&th[i], NULL, thread_run, (void *)&ids[i])==0);
     }
 
+    pthread_t checkcommit_th;
+    assert(pthread_create(&checkcommit_th, NULL, checkcommit_thread_run, NULL)==0);
+
     pthread_t periodic_th;
-    pthread_create(&periodic_th, NULL, periodic_stat, NULL);
+    assert(pthread_create(&periodic_th, NULL, periodic_stat, NULL)==0);
 
     for (int i = 0; i < n_th; i++) {
         pthread_join(th[i], NULL);
