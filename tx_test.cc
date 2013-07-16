@@ -10,7 +10,7 @@
 #define MAX_THREADS 32
 #define UNIQ_STATUS (1 << 6)
 #define USELESS_BITS 0xffffffc0 /*only the least sig 6 bits are zero*/
-#define NUM_TRIES 100000000
+#define NUM_TRIES 1000000000
 
 #define MAX_RSET 10240
 #define MAX_WSET 10240
@@ -326,6 +326,7 @@ thread_run(void *x)
     bool in_rtm;
     tx_context_t c;
     int committed = 0;
+    volatile int y;
 
     for (int k = 0; k < NUM_TRIES; k++) {
         switch (tx_type) {
@@ -335,10 +336,14 @@ thread_run(void *x)
             case SIMPLE_RW:
 #ifdef RTM_ENABLED
                 in_rtm = rtm_begin(id);
+                y = fallback_lock; //grabbing this lock aborts this rtm 
                 simple_body(id);
                 if (in_rtm) {
                     assert(rtm_end(id));
                     committed++;
+                }else{
+                    while (!__sync_bool_compare_and_swap(&fallback_lock, 1, 0)) {
+                    }
                 }
 #endif
                 break;
